@@ -74,7 +74,7 @@ export class ChatsService {
     const membership = await this.members.find({
       where: { userId },
       relations: { chat: { members: { user: true } } },
-      order: { joinedAt: 'DESC' },
+      order: { createdAt: 'DESC' },
     });
     return Promise.all(
       membership.map(async (m) => {

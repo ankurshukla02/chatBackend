@@ -10,6 +10,8 @@ export class InitialChatSchema1730000000000 implements MigrationInterface {
       "email" varchar(255) NOT NULL,
       "password_hash" varchar(255) NOT NULL,
       "created_at" timestamptz NOT NULL DEFAULT now(),
+      "updated_at" timestamptz NOT NULL DEFAULT now(),
+      "deleted_at" timestamptz NULL,
       CONSTRAINT "pk_users_id" PRIMARY KEY ("id"),
       CONSTRAINT "uq_users_email" UNIQUE ("email")
     )`);
@@ -19,6 +21,7 @@ export class InitialChatSchema1730000000000 implements MigrationInterface {
       "user_high_id" uuid NOT NULL,
       "created_at" timestamptz NOT NULL DEFAULT now(),
       "updated_at" timestamptz NOT NULL DEFAULT now(),
+      "deleted_at" timestamptz NULL,
       CONSTRAINT "pk_chats_id" PRIMARY KEY ("id"),
       CONSTRAINT "uq_chats_user_pair" UNIQUE ("user_low_id", "user_high_id"),
       CONSTRAINT "ck_chats_user_pair_order" CHECK ("user_low_id" < "user_high_id"),
@@ -28,7 +31,9 @@ export class InitialChatSchema1730000000000 implements MigrationInterface {
     await queryRunner.query(`CREATE TABLE "chat_members" (
       "chat_id" uuid NOT NULL,
       "user_id" uuid NOT NULL,
-      "joined_at" timestamptz NOT NULL DEFAULT now(),
+      "created_at" timestamptz NOT NULL DEFAULT now(),
+      "updated_at" timestamptz NOT NULL DEFAULT now(),
+      "deleted_at" timestamptz NULL,
       CONSTRAINT "pk_chat_members" PRIMARY KEY ("chat_id", "user_id"),
       CONSTRAINT "fk_chat_members_chat" FOREIGN KEY ("chat_id") REFERENCES "chats"("id") ON DELETE CASCADE,
       CONSTRAINT "fk_chat_members_user" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE
