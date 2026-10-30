@@ -134,7 +134,6 @@ export class ChatsService {
       .doc(chatId)
       .collection('messages')
       .orderBy('createdAt', 'desc')
-      .orderBy('__name__')
       .limit(limit);
     if (cursor) {
       const cursorDoc = await this.firestore
