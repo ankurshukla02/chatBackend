@@ -1,16 +1,9 @@
-import { Body, Controller, Post } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
-import { AuthService } from './auth.service';
+import { type AuthService } from './auth.service';
 import { LoginDto, RegisterDto } from './auth.dto';
 
-@ApiTags('Authentication')
-@Controller('auth')
-export class AuthController {
-  constructor(private readonly auth: AuthService) {}
-  @Post('register') register(@Body() dto: RegisterDto) {
-    return this.auth.register(dto);
-  }
-  @Post('login') login(@Body() dto: LoginDto) {
-    return this.auth.login(dto);
-  }
-}
+const createAuthController = (auth: AuthService) => ({
+  register: (dto: RegisterDto) => auth.register(dto),
+  login: (dto: LoginDto) => auth.login(dto),
+});
+
+export { createAuthController };

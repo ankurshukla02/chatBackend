@@ -1,31 +1,78 @@
-import {
-  CreateDateColumn,
-  DeleteDateColumn,
-  Entity,
-  Index,
-  JoinColumn,
-  ManyToOne,
-  PrimaryColumn,
-  UpdateDateColumn,
-} from 'typeorm';
+import { DataTypes, Model, Sequelize } from 'sequelize';
 import { User } from '../users/user.entity';
 import { Chat } from './chat.entity';
 
-@Entity('chat_members')
-@Index('idx_chat_members_user_id', ['userId'])
-export class ChatMember {
-  @PrimaryColumn({ name: 'chat_id', type: 'uuid' }) chatId!: string;
-  @PrimaryColumn({ name: 'user_id', type: 'uuid' }) userId!: string;
-  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
-  createdAt!: Date;
-  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
-  updatedAt!: Date;
-  @DeleteDateColumn({ name: 'deleted_at', type: 'timestamptz', nullable: true })
-  deletedAt!: Date | null;
-  @ManyToOne(() => Chat, (chat) => chat.members, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'chat_id' })
-  chat!: Chat;
-  @ManyToOne(() => User, (user) => user.memberships, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'user_id' })
-  user!: User;
+export interface ChatMemberAttributes {
+  chatId: string;
+  userId: string;
+  createdAt: Date;
+  updatedAt: Date;
+  deletedAt: Date | null;
+}
+
+export type ChatMemberCreationAttributes = Omit<ChatMemberAttributes, 'createdAt' | 'updatedAt' | 'deletedAt'> &
+  Partial<Pick<ChatMemberAttributes, 'createdAt' | 'updatedAt' | 'deletedAt'>>;
+
+export class ChatMember extends Model<ChatMemberAttributes, ChatMemberCreationAttributes> implements ChatMemberAttributes {
+  declare chatId: string;
+  declare userId: string;
+  declare createdAt: Date;
+  declare updatedAt: Date;
+  declare deletedAt: Date | null;
+  declare chat?: Chat;
+  declare user?: User;
+
+  static initModel(sequelize: Sequelize) {
+    ChatMember.init(
+      {
+        chatId: {
+          type: DataTypes.UUID,
+          primaryKey: true,
+          allowNull: false,
+          field: 'chat_id',
+        },
+        userId: {
+          type: DataTypes.UUID,
+          primaryKey: true,
+          allowNull: false,
+          field: 'user_id',
+        },
+        createdAt: {
+          type: DataTypes.DATE,
+          defaultValue: DataTypes.NOW,
+          allowNull: false,
+          field: 'created_at',
+        },
+        updatedAt: {
+          type: DataTypes.DATE,
+          defaultValue: DataTypes.NOW,
+          allowNull: false,
+          field: 'updated_at',
+        },
+        deletedAt: {
+          type: DataTypes.DATE,
+          allowNull: true,
+          field: 'deleted_at',
+        },
+      },
+      {
+        sequelize,
+        tableName: 'chat_members',
+        timestamps: true,
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+        deletedAt: 'deleted_at',
+        paranoid: true,
+        modelName: 'ChatMember',
+        indexes: [
+          {
+            name: 'idx_chat_members_user_id',
+            fields: ['userId'],
+          },
+        ],
+      },
+    );
+
+    return ChatMember;
+  }
 }

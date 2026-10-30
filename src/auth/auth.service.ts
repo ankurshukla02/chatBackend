@@ -1,55 +1,46 @@
-import {
-  ConflictException,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
-import { QueryFailedError } from 'typeorm';
-import { JwtService } from '@nestjs/jwt';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
+import { UniqueConstraintError } from 'sequelize';
 import { User } from '../users/user.entity';
 import { buildSuccessResponse, ApiResponse } from '../common/response.util';
-import { throwHttpError } from '../common/error.util';
+import { AppError, throwHttpError } from '../common/error.util';
 import { LoginDto, RegisterDto } from './auth.dto';
 
-@Injectable()
-export class AuthService {
-  constructor(
-    @InjectRepository(User) private readonly users: Repository<User>,
-    private readonly jwt: JwtService,
-  ) {}
+const createAuthService = (
+  users: typeof User,
+  jwt: { signAsync: (payload: unknown) => Promise<string> },
+) => {
+  const sign = async (user: User) => jwt.signAsync({ sub: user.id, email: user.email });
 
-  register = async (dto: RegisterDto): Promise<ApiResponse<{ user: { id: string; name: string; email: string }; accessToken: string }>> => {
+  const register = async (
+    dto: RegisterDto,
+  ): Promise<
+    ApiResponse<{ user: { id: string; name: string; email: string }; accessToken: string }>
+  > => {
     try {
       const email = dto.email.toLowerCase().trim();
-      if (await this.users.exists({ where: { email } })) {
-        throw new ConflictException('Email is already registered');
+      if (await users.findOne({ where: { email } })) {
+        throw new AppError('Email is already registered', 409);
       }
-
-      const user = this.users.create({
+      console.log('Registering user:', dto.name, email);
+      const saved = await users.create({
         name: dto.name.trim(),
         email,
         passwordHash: await bcrypt.hash(dto.password, 12),
       });
-
-      const saved = await this.users.save(user);
+      console.log('User registered:', saved.id);
       const payload = {
         user: { id: saved.id, name: saved.name, email: saved.email },
-        accessToken: await this.sign(saved),
+        accessToken: await sign(saved),
       };
 
+      console.log('Login successful for user:', saved.id);
       return buildSuccessResponse(payload, 'User registered successfully', 201);
     } catch (error) {
-      if (
-        error instanceof QueryFailedError &&
-        (error as QueryFailedError & { driverError?: { code?: string } })
-          .driverError?.code === '23505'
-      ) {
-        throw new ConflictException('Email is already registered');
+      if (error instanceof UniqueConstraintError) {
+        throw new AppError('Email is already registered', 409);
       }
 
-      if (error instanceof ConflictException) {
+      if (error instanceof AppError) {
         throw error;
       }
 
@@ -58,26 +49,28 @@ export class AuthService {
     }
   };
 
-  login = async (dto: LoginDto): Promise<ApiResponse<{ user: { id: string; name: string; email: string }; accessToken: string }>> => {
+  const login = async (
+    dto: LoginDto,
+  ): Promise<
+    ApiResponse<{ user: { id: string; name: string; email: string }; accessToken: string }>
+  > => {
     try {
-      const user = await this.users
-        .createQueryBuilder('user')
-        .addSelect('user.passwordHash')
-        .where('user.email = :email', { email: dto.email.toLowerCase().trim() })
-        .getOne();
+      const user = await users.findOne({
+        where: { email: dto.email.toLowerCase().trim() },
+      });
 
       if (!user || !(await bcrypt.compare(dto.password, user.passwordHash))) {
-        throw new UnauthorizedException('Invalid email or password');
+        throw new AppError('Invalid email or password', 401);
       }
 
       const payload = {
         user: { id: user.id, name: user.name, email: user.email },
-        accessToken: await this.sign(user),
+        accessToken: await sign(user),
       };
 
       return buildSuccessResponse(payload, 'Login successful');
     } catch (error) {
-      if (error instanceof UnauthorizedException) {
+      if (error instanceof AppError) {
         throw error;
       }
 
@@ -86,7 +79,9 @@ export class AuthService {
     }
   };
 
-  private sign(user: User) {
-    return this.jwt.signAsync({ sub: user.id, email: user.email });
-  }
-}
+  return { register, login };
+};
+
+type AuthService = ReturnType<typeof createAuthService>;
+
+export { createAuthService, type AuthService };

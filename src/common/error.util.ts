@@ -1,26 +1,28 @@
-import {
-  ConflictException,
-  HttpException,
-  InternalServerErrorException,
-  UnauthorizedException,
-} from '@nestjs/common';
+class AppError extends Error {
+  status: number;
+  cause?: unknown;
 
-export const handleError = (message: string, statusCode = 500): never => {
-  if (statusCode === 401) {
-    throw new UnauthorizedException(message);
+  constructor(message: string, status = 500, cause?: unknown) {
+    super(message);
+    this.name = 'AppError';
+    this.status = status;
+    this.cause = cause;
   }
+}
 
-  if (statusCode === 409) {
-    throw new ConflictException(message);
-  }
-
-  throw new InternalServerErrorException(message);
+const handleError = (message: string, statusCode = 500): never => {
+  throw new AppError(message, statusCode);
 };
 
-export const throwHttpError = (error: unknown, message?: string): never => {
-  if (error instanceof HttpException) {
+const throwHttpError = (error: unknown, message?: string): never => {
+  if (error instanceof AppError) {
     throw error;
   }
 
-  throw new InternalServerErrorException(message ?? 'Something went wrong');
+  const detailMessage = error instanceof Error ? error.message : 'Something went wrong';
+  const finalMessage = message ? `${message}: ${detailMessage}` : detailMessage;
+
+  throw new AppError(finalMessage, 500, error);
 };
+
+export { AppError, handleError, throwHttpError };

@@ -1,113 +1,109 @@
-import {
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-  BadRequestException,
-  Inject,
-} from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, In } from 'typeorm';
 import { Firestore, FieldValue } from 'firebase-admin/firestore';
+import { Op, Sequelize } from 'sequelize';
 import { Chat } from './chat.entity';
 import { ChatMember } from './chat-member.entity';
 import { User } from '../users/user.entity';
-import { FIRESTORE } from '../config/firebase.provider';
 
-@Injectable()
-export class ChatsService {
-  constructor(
-    @InjectRepository(Chat) private readonly chats: Repository<Chat>,
-    @InjectRepository(ChatMember)
-    private readonly members: Repository<ChatMember>,
-    @InjectRepository(User) private readonly users: Repository<User>,
-    private readonly dataSource: DataSource,
-    @Inject(FIRESTORE) private readonly firestore: Firestore,
-  ) {}
+class HttpError extends Error {
+  status: number;
 
-  async createOrGet(userAId: string, userBId: string, requesterId: string) {
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = status;
+  }
+}
+
+const createChatsService = (
+  chats: typeof Chat,
+  members: typeof ChatMember,
+  users: typeof User,
+  sequelize: Sequelize,
+  firestore: Firestore,
+) => {
+  const createOrGet = async (userAId: string, userBId: string, requesterId: string) => {
     if (userAId === userBId)
-      throw new BadRequestException('A 1:1 chat requires two different users');
+      throw new HttpError('A 1:1 chat requires two different users', 400);
     if (![userAId, userBId].includes(requesterId))
-      throw new ForbiddenException(
-        'You can only create a chat involving yourself',
-      );
-    const users = await this.users.findBy({ id: In([userAId, userBId]) });
-    if (users.length !== 2)
-      throw new NotFoundException('One or both users do not exist');
+      throw new HttpError('You can only create a chat involving yourself', 403);
+
+    const foundUsers = await users.findAll({ where: { id: { [Op.in]: [userAId, userBId] } } });
+    if (foundUsers.length !== 2)
+      throw new HttpError('One or both users do not exist', 404);
+
     const pair = [userAId, userBId].sort();
-    const existing = await this.chats.findOne({
-      where: { userLowId: pair[0], userHighId: pair[1] },
-    });
+    const existing = await chats.findOne({ where: { userLowId: pair[0], userHighId: pair[1] } });
     if (existing) return { chatId: existing.id, created: false };
 
-    // The unique pair index is the concurrency-safe source of truth.
     try {
-      const chatId = await this.dataSource.transaction(async (manager) => {
-        const chat = await manager.save(
-          Chat,
-          manager.create(Chat, { userLowId: pair[0], userHighId: pair[1] }),
+      const chatId = await sequelize.transaction(async (transaction) => {
+        const chat = await chats.create({ userLowId: pair[0], userHighId: pair[1] }, { transaction });
+        await members.bulkCreate(
+          [
+            { chatId: chat.id, userId: pair[0] },
+            { chatId: chat.id, userId: pair[1] },
+          ],
+          { transaction },
         );
-        await manager.insert(ChatMember, [
-          { chatId: chat.id, userId: pair[0] },
-          { chatId: chat.id, userId: pair[1] },
-        ]);
         return chat.id;
       });
       return { chatId, created: true };
     } catch (error) {
-      // If a concurrent request won the unique-index race, return its chat.
-      const winner = await this.chats.findOne({
-        where: { userLowId: pair[0], userHighId: pair[1] },
-      });
+      const winner = await chats.findOne({ where: { userLowId: pair[0], userHighId: pair[1] } });
       if (winner) return { chatId: winner.id, created: false };
       throw error;
     }
-  }
+  };
 
-  async assertMember(chatId: string, userId: string) {
-    const member = await this.members.findOne({ where: { chatId, userId } });
-    if (!member)
-      throw new ForbiddenException('You are not a member of this chat');
-  }
+  const assertMember = async (chatId: string, userId: string) => {
+    const member = await members.findOne({ where: { chatId, userId } });
+    if (!member) throw new HttpError('You are not a member of this chat', 403);
+  };
 
-  async listUserChats(userId: string) {
-    const membership = await this.members.find({
+  const listUserChats = async (userId: string) => {
+    const memberships = await members.findAll({
       where: { userId },
-      relations: { chat: { members: { user: true } } },
-      order: { createdAt: 'DESC' },
+      include: [
+        {
+          model: Chat,
+          as: 'chat',
+          include: [{ model: ChatMember, as: 'members', include: [{ model: User, as: 'user' }] }],
+        },
+      ],
+      order: [['createdAt', 'DESC']],
     });
+
     return Promise.all(
-      membership.map(async (m) => {
-        const chatMembers = m.chat.members.map((member) => ({
-          id: member.user.id,
-          name: member.user.name,
-          email: member.user.email,
+      memberships.map(async (membership) => {
+        const chat = membership.chat as Chat & { members?: Array<ChatMember & { user?: User }> };
+        const chatMembers = (chat.members ?? []).map((member) => ({
+          id: member.user?.id,
+          name: member.user?.name,
+          email: member.user?.email,
         }));
-        const lastMessage = await this.firestore
+
+        const lastMessage = await firestore
           .collection('chats')
-          .doc(m.chatId)
+          .doc(membership.chatId)
           .collection('messages')
           .orderBy('createdAt', 'desc')
           .limit(1)
           .get();
+
         return {
-          chatId: m.chatId,
+          chatId: membership.chatId,
           members: chatMembers,
-          createdAt: m.chat.createdAt,
-          updatedAt: m.chat.updatedAt,
+          createdAt: chat.createdAt,
+          updatedAt: chat.updatedAt,
           lastMessage: lastMessage.empty ? null : lastMessage.docs[0].data(),
         };
       }),
     );
-  }
+  };
 
-  async sendMessage(chatId: string, senderId: string, text: string) {
-    await this.assertMember(chatId, senderId);
-    const ref = this.firestore
-      .collection('chats')
-      .doc(chatId)
-      .collection('messages')
-      .doc();
+  const sendMessage = async (chatId: string, senderId: string, text: string) => {
+    await assertMember(chatId, senderId);
+    const ref = firestore.collection('chats').doc(chatId).collection('messages').doc();
     const message = {
       messageId: ref.id,
       chatId,
@@ -117,74 +113,60 @@ export class ChatsService {
       readBy: { [senderId]: true },
     };
     await ref.set(message);
-    await this.chats.update({ id: chatId }, { updatedAt: new Date() });
+    await chats.update({ updatedAt: new Date() }, { where: { id: chatId } });
     const saved = await ref.get();
     return saved.data();
-  }
+  };
 
-  async getMessages(
-    chatId: string,
-    userId: string,
-    limit: number,
-    cursor?: string,
-  ) {
-    await this.assertMember(chatId, userId);
-    let query = this.firestore
+  const getMessages = async (chatId: string, userId: string, limit: number, cursor?: string) => {
+    await assertMember(chatId, userId);
+    let query = firestore
       .collection('chats')
       .doc(chatId)
       .collection('messages')
       .orderBy('createdAt', 'desc')
       .limit(limit);
+
     if (cursor) {
-      const cursorDoc = await this.firestore
-        .collection('chats')
-        .doc(chatId)
-        .collection('messages')
-        .doc(cursor)
-        .get();
-      if (!cursorDoc.exists)
-        throw new BadRequestException('Invalid pagination cursor');
+      const cursorDoc = await firestore.collection('chats').doc(chatId).collection('messages').doc(cursor).get();
+      if (!cursorDoc.exists) throw new HttpError('Invalid pagination cursor', 400);
       query = query.startAfter(cursorDoc);
     }
+
     const snapshot = await query.get();
     const messages = snapshot.docs.map((doc) => doc.data()).reverse();
     return {
       messages,
-      nextCursor:
-        snapshot.docs.length === limit
-          ? snapshot.docs[snapshot.docs.length - 1].id
-          : null,
+      nextCursor: snapshot.docs.length === limit ? snapshot.docs[snapshot.docs.length - 1].id : null,
     };
-  }
+  };
 
-  async markRead(chatId: string, messageId: string, userId: string) {
-    await this.assertMember(chatId, userId);
-    const ref = this.firestore
-      .collection('chats')
-      .doc(chatId)
-      .collection('messages')
-      .doc(messageId);
+  const markRead = async (chatId: string, messageId: string, userId: string) => {
+    await assertMember(chatId, userId);
+    const ref = firestore.collection('chats').doc(chatId).collection('messages').doc(messageId);
     const doc = await ref.get();
-    if (!doc.exists) throw new NotFoundException('Message not found');
+    if (!doc.exists) throw new HttpError('Message not found', 404);
     await ref.update({ [`readBy.${userId}`]: true });
     return { chatId, messageId, userId, read: true };
-  }
+  };
 
-  async updateLastSeen(chatId: string, userId: string, messageId: string) {
-    await this.assertMember(chatId, userId);
-    const messageRef = this.firestore
-      .collection('chats')
-      .doc(chatId)
-      .collection('messages')
-      .doc(messageId);
+  const updateLastSeen = async (chatId: string, userId: string, messageId: string) => {
+    await assertMember(chatId, userId);
+    const messageRef = firestore.collection('chats').doc(chatId).collection('messages').doc(messageId);
     const message = await messageRef.get();
-    if (!message.exists) throw new NotFoundException('Message not found');
-    await this.firestore
+    if (!message.exists) throw new HttpError('Message not found', 404);
+    await firestore
       .collection('chats')
       .doc(chatId)
       .collection('lastSeen')
       .doc(userId)
       .set({ userId, messageId, updatedAt: FieldValue.serverTimestamp() });
     return { chatId, userId, messageId, updated: true };
-  }
-}
+  };
+
+  return { createOrGet, assertMember, listUserChats, sendMessage, getMessages, markRead, updateLastSeen };
+};
+
+type ChatsService = ReturnType<typeof createChatsService>;
+
+export { createChatsService, type ChatsService };

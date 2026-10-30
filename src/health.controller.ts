@@ -1,9 +1,5 @@
-import { Controller, Get } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
-@ApiTags('Health')
-@Controller('health')
-export class HealthController {
-  @Get() check() {
-    return { status: 'ok', timestamp: new Date().toISOString() };
-  }
-}
+const createHealthController = () => ({
+  check: () => ({ status: 'ok', timestamp: new Date().toISOString() }),
+});
+
+export { createHealthController };
